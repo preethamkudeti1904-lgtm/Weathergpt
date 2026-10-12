@@ -12,6 +12,8 @@ from typing import Optional
 from app.services.sms.service import sms_service
 from app.auth.deps import get_current_user, get_current_user_optional
 
+from app.core.phone import normalize_and_validate_phone, mask_phone_number
+
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 class SendPhoneOtpRequest(BaseModel):
@@ -28,10 +30,23 @@ async def register(user_in: UserCreate, db: Session = Depends(get_db)):
     if user_in.confirm_password is not None and user_in.password != user_in.confirm_password:
         raise HTTPException(status_code=400, detail="Passwords do not match.")
 
+    # Validate and normalize phone number
+    try:
+        clean_phone, norm_country_code = normalize_and_validate_phone(
+            user_in.phone_number, user_in.phone_country_code or "+91"
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+
     # Check if user with same email exists
-    existing = db.query(User).filter(User.email == user_in.email.lower()).first()
-    if existing:
+    existing_email = db.query(User).filter(User.email == user_in.email.lower()).first()
+    if existing_email:
         raise HTTPException(status_code=400, detail="An account with this email already exists.")
+
+    # Check if user with same phone number exists
+    existing_phone = db.query(User).filter(User.phone_number == clean_phone).first()
+    if existing_phone:
+        raise HTTPException(status_code=400, detail="An account with this phone number already exists.")
 
     try:
         hashed_pw = password_service.hash_password(user_in.password)
@@ -41,12 +56,11 @@ async def register(user_in: UserCreate, db: Session = Depends(get_db)):
         print(f"[Registration Error] Password hashing failed: {e}")
         raise HTTPException(status_code=500, detail="Unable to create your account right now. Please try again.")
 
-    clean_phone = user_in.phone_number.replace(" ", "").replace("-", "").strip()
     new_user = User(
         name=user_in.name,
         email=user_in.email.lower(),
         phone_number=clean_phone,
-        phone_country_code=user_in.phone_country_code or "+91",
+        phone_country_code=norm_country_code,
         phone_verified=False,
         password_hash=hashed_pw,
         user_type=user_in.user_type or "General User",
@@ -90,13 +104,21 @@ async def register(user_in: UserCreate, db: Session = Depends(get_db)):
     db.commit()
 
     # Automatically trigger initial phone OTP dispatch
-    try:
-        await sms_service.create_and_send_phone_otp(db, clean_phone, new_user.id)
-    except Exception as e:
-        print(f"[SMS Warning] Initial registration OTP dispatch error: {e}")
+    otp_res = await sms_service.create_and_send_phone_otp(db, clean_phone, new_user.id)
+    if not otp_res.get("success"):
+        err_code = otp_res.get("status_code", 400)
+        raise HTTPException(status_code=err_code, detail=otp_res.get("error", "Failed to send verification OTP"))
 
     token = create_access_token(new_user.id)
-    return Token(access_token=token, token_type="bearer", user=UserOut.model_validate(new_user))
+    return Token(
+        access_token=token,
+        token_type="bearer",
+        user=UserOut.model_validate(new_user),
+        dev_otp=otp_res.get("dev_otp"),
+        is_development=otp_res.get("is_development", False),
+        sms_provider=otp_res.get("provider"),
+        message=otp_res.get("message")
+    )
 
 @router.post("/send-phone-otp")
 async def send_phone_otp(
@@ -110,19 +132,29 @@ async def send_phone_otp(
     if not target_phone:
         raise HTTPException(status_code=400, detail="Phone number is required to send verification OTP.")
 
-    clean_phone = target_phone.replace(" ", "").replace("-", "").strip()
+    try:
+        clean_phone, norm_country_code = normalize_and_validate_phone(
+            target_phone, payload.phone_country_code or "+91"
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+
     user_id = current_user.id if current_user else None
 
-    # If authenticated and phone number differs, update user's unverified phone number
+    # If authenticated and phone number differs, check for duplicate phone number
     if current_user and current_user.phone_number != clean_phone:
+        dup = db.query(User).filter(User.phone_number == clean_phone, User.id != current_user.id).first()
+        if dup:
+            raise HTTPException(status_code=400, detail="An account with this phone number already exists.")
         current_user.phone_number = clean_phone
-        current_user.phone_country_code = payload.phone_country_code or "+91"
+        current_user.phone_country_code = norm_country_code
         current_user.phone_verified = False
         db.commit()
 
     res = await sms_service.create_and_send_phone_otp(db, clean_phone, user_id)
     if not res.get("success"):
-        raise HTTPException(status_code=429, detail=res.get("error", "Failed to send OTP"))
+        status_code = res.get("status_code", 400)
+        raise HTTPException(status_code=status_code, detail=res.get("error", "Failed to send OTP"))
     return res
 
 @router.post("/verify-phone-otp")
@@ -131,24 +163,35 @@ def verify_phone_otp(
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user_optional)
 ):
-    user_id = current_user.id if current_user else None
-    success, msg = sms_service.verify_phone_otp(db, payload.phone_number, payload.otp, user_id)
-    if not success:
-        raise HTTPException(status_code=400, detail=msg)
+    try:
+        clean_phone, _ = normalize_and_validate_phone(payload.phone_number)
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
 
-    # Refresh user if authenticated
+    user_id = current_user.id if current_user else None
+    success, msg, status_code, verified_user = sms_service.verify_phone_otp(db, clean_phone, payload.otp, user_id)
+    if not success:
+        raise HTTPException(status_code=status_code, detail=msg)
+
+    # Issue access token for the verified user
     user_data = None
-    if current_user:
+    token = None
+    if verified_user:
+        user_data = UserOut.model_validate(verified_user)
+        token = create_access_token(verified_user.id)
+    elif current_user:
         db.refresh(current_user)
         user_data = UserOut.model_validate(current_user)
+        token = create_access_token(current_user.id)
 
     return {
         "success": True,
         "message": msg,
         "phone_verified": True,
+        "access_token": token,
+        "token_type": "bearer",
         "user": user_data
     }
-
 
 @router.post("/login", response_model=Token)
 def login(login_data: UserLogin, db: Session = Depends(get_db)):
@@ -158,6 +201,12 @@ def login(login_data: UserLogin, db: Session = Depends(get_db)):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"}
+        )
+
+    if not user.phone_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Phone number is not verified. Please verify your phone number to continue."
         )
 
     token = create_access_token(user.id)

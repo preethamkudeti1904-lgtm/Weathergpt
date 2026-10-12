@@ -3,6 +3,7 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { WeatherProvider } from './contexts/WeatherContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { Layout } from './components/layout/Layout';
+import { canAccessAdvisory } from './utils/permissions';
 
 // Pages
 import { LandingPage } from './pages/LandingPage';
@@ -21,13 +22,20 @@ import { WindDirectionMapPage } from './pages/WindDirectionMapPage';
 import { SettingsPage } from './pages/SettingsPage';
 
 const AppContent: React.FC = () => {
+  const { user, isLoading } = useAuth();
+
   const [currentPage, setCurrentPage] = useState<string>(() => {
     const path = window.location.pathname.replace('/', '').toLowerCase();
     if (path === 'wind-direction') return 'wind-direction';
+    if (path === 'advisory') return 'advisory';
     return localStorage.getItem('weathergpt_page') || 'dashboard';
   });
 
   const handleNavigate = (page: string) => {
+    // Route protection: restrict advisory exclusively to Farmers
+    if (page === 'advisory' && !canAccessAdvisory(user)) {
+      page = 'dashboard';
+    }
     setCurrentPage(page);
     localStorage.setItem('weathergpt_page', page);
     const newPath = page === 'dashboard' ? '/' : `/${page}`;
@@ -37,11 +45,25 @@ const AppContent: React.FC = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  // Route protection for advisory: redirect unauthorized visitors to dashboard
+  useEffect(() => {
+    if (currentPage === 'advisory' && !isLoading && !canAccessAdvisory(user)) {
+      handleNavigate('dashboard');
+    }
+  }, [currentPage, user, isLoading]);
+
   useEffect(() => {
     const handlePopState = () => {
       const path = window.location.pathname.replace('/', '').toLowerCase();
       if (path === 'wind-direction') {
         setCurrentPage('wind-direction');
+      } else if (path === 'advisory') {
+        if (!isLoading && !canAccessAdvisory(user)) {
+          setCurrentPage('dashboard');
+          window.history.replaceState({}, '', '/');
+        } else {
+          setCurrentPage('advisory');
+        }
       } else if (path) {
         setCurrentPage(path);
       } else {
@@ -50,7 +72,7 @@ const AppContent: React.FC = () => {
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, []);
+  }, [user, isLoading]);
 
   // Standalone pages without dashboard sidebar
   if (currentPage === 'landing') {
@@ -76,7 +98,9 @@ const AppContent: React.FC = () => {
       {currentPage === 'chat' && <ChatPage />}
       {currentPage === 'climate' && <ClimatePage />}
       {currentPage === 'locations' && <LocationsPage />}
-      {currentPage === 'advisory' && <AdvisoryPage />}
+      {currentPage === 'advisory' && (
+        canAccessAdvisory(user) ? <AdvisoryPage /> : <DashboardPage onNavigate={handleNavigate} />
+      )}
       {currentPage === 'wind-direction' && <WindDirectionMapPage />}
       {currentPage === 'settings' && <SettingsPage />}
     </Layout>

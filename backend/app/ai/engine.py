@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import json
 import datetime
@@ -7,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.weather.service import weather_service
 from app.services.historical.disasters import historical_disaster_service
+from app.services.climate.historical_year_service import historical_year_service
 from app.services.safety.guidance import safety_guidance
 from app.services.risk.hazard_engine import hazard_risk_engine
 from app.ai.query_parser import parse_weather_query
@@ -482,54 +484,9 @@ class AIService:
             return "You can switch the entire interface language at any time using the Language selector dropdown in the top navigation bar.", None, suggestions
 
         # ---------------------------------------------------------------------
-        # 6A. CLIMATE_ANALYSIS & HISTORICAL_WEATHER (Section 32)
-        # ---------------------------------------------------------------------
-        if intent == "HISTORICAL_WEATHER" and tools_data.get("climate"):
-            clim = tools_data["climate"]
-            loc_name = clim.get("location_name", location)
-            m_temp = clim.get("annual_mean_temp")
-            m_rain = clim.get("annual_total_rainfall")
-            wettest = clim.get("wettest_month")
-            warmest = clim.get("warmest_month")
-            period = clim.get("historical_period") or clim.get("period")
-            src = clim.get("source", "ECMWF ERA5 Atmospheric Reanalysis / Open-Meteo Archive")
-
-            if lang == "te":
-                reply = (
-                    f"📊 {loc_name} కోసం అధికారిక శీతోష్ణస్థితి విశ్లేషణ (Climate Analysis):\n\n"
-                    f"• సగటు వార్షిక ఉష్ణోగ్రత: {m_temp}°C\n"
-                    f"• వార్షిక మొత్తం వర్షపాతం: {m_rain} mm\n"
-                    f"• అత్యంత వేడిగా ఉండే నెల (Warmest Month): {warmest}\n"
-                    f"• అత్యధిక వర్షపాతం నమోదయ్యే నెల (Wettest Month): {wettest}\n"
-                    f"• అధికారిక కాలపరిమితి: {period}\n"
-                    f"మూలం: {src}"
-                )
-            elif lang == "hi":
-                reply = (
-                    f"📊 {loc_name} के लिए आधिकारिक जलवायु विश्लेषण (Climate Analysis):\n\n"
-                    f"• औसत वार्षिक तापमान: {m_temp}°C\n"
-                    f"• वार्षिक कुल वर्षा: {m_rain} mm\n"
-                    f"• सबसे गर्म महीना (Warmest Month): {warmest}\n"
-                    f"• सबसे अधिक वर्षा वाला महीना (Wettest Month): {wettest}\n"
-                    f"• आधिकारिक आधार अवधि: {period}\n"
-                    f"स्रोत: {src}"
-                )
-            else:
-                reply = (
-                    f"📊 Authoritative Climate Analysis & Historical Normals for {loc_name}:\n\n"
-                    f"• Mean Annual Temperature: {m_temp}°C\n"
-                    f"• Annual Total Precipitation: {m_rain} mm\n"
-                    f"• Warmest Month: {warmest}\n"
-                    f"• Wettest Month: {wettest}\n"
-                    f"• Climatological Baseline: {period}\n"
-                    f"Source: {src}"
-                )
-            return reply, f"Grounded in verified historical climatology ({period})", suggestions
-
-        # ---------------------------------------------------------------------
         # 6B. HISTORICAL_DISASTER
         # ---------------------------------------------------------------------
-        if intent in ["HISTORICAL_DISASTER", "HISTORICAL_WEATHER"]:
+        if intent == "HISTORICAL_DISASTER":
             events = history.get("events", [])
             has_records = history.get("has_records", False)
             queried_loc = history.get("location_queried", location)
@@ -773,6 +730,138 @@ class AIService:
             return forecast_texts.get(lang, forecast_texts["en"]), None, suggestions
 
         # ---------------------------------------------------------------------
+        # 9B. HISTORICAL_WEATHER / CLIMATE_NORMALS (Section 18 & 32)
+        # ---------------------------------------------------------------------
+        if intent == "HISTORICAL_WEATHER":
+            clim = tools_data.get("climate", {})
+            req_year = clim.get("year")
+
+            # Check if this is a specific calendar year dataset (Requirement 14)
+            if req_year:
+                summ = clim.get("summary") or {}
+                src = clim.get("source") or {}
+                st_name = src.get("station") or location
+                dist_km = src.get("distance_km")
+                dist_str = f" (~{dist_km} km away)" if dist_km is not None and dist_km > 0 else ""
+
+                mean_t = summ.get("annual_average_temperature", "N/A")
+                rain_mm = summ.get("annual_rainfall", "N/A")
+                high_t = summ.get("highest_temperature", "N/A")
+                low_t = summ.get("lowest_temperature", "N/A")
+                wettest = summ.get("wettest_month", "N/A")
+                warmest = summ.get("warmest_month", "N/A")
+                rain_days = summ.get("total_rainy_days", "N/A")
+
+                climate_texts = {
+                    "en": (
+                        f"📊 **Historical Meteorological Observations for {location} ({req_year})**\n\n"
+                        f"• **Selected Year**: {req_year}\n"
+                        f"• **Annual Total Rainfall**: {rain_mm} mm (across {rain_days} rainy days ≥2.5mm)\n"
+                        f"• **Annual Average Temperature**: {mean_t}°C\n"
+                        f"• **Extreme Temperatures**: Peak High: {high_t}°C | Lowest: {low_t}°C\n"
+                        f"• **Wettest Month**: {wettest}\n"
+                        f"• **Warmest Month**: {warmest}\n"
+                        f"• **Reference Station**: {st_name}{dist_str}\n\n"
+                        f"🏛️ *Source: {src.get('name', 'ECMWF ERA5 / IMD Observatory Network')} (Actual {req_year} Observations)*"
+                    ),
+                    "te": (
+                        f"📊 **{location} చారిత్రక వాతావరణ పరిశీలనలు ({req_year})**\n\n"
+                        f"• **ఎంపిక చేసిన సంవత్సరం**: {req_year}\n"
+                        f"• **వార్షిక మొత్తం వర్షపాతం**: {rain_mm} మి.మీ ({rain_days} వర్షపు రోజులు)\n"
+                        f"• **సగటు వార్షిక ఉష్ణోగ్రత**: {mean_t}°C\n"
+                        f"• **గరిష్ట ఉష్ణోగ్రత**: {high_t}°C | కనిష్ట ఉష్ణోగ్రత: {low_t}°C\n"
+                        f"• **అత్యధిక వర్షపాతం గల నెల**: {wettest}\n"
+                        f"• **అత్యంత వేడిగా ఉండే నెల**: {warmest}\n"
+                        f"• **సూచన స్టేషన్**: {st_name}{dist_str}"
+                    ),
+                    "hi": (
+                        f"📊 **{location} के ऐतिहासिक मौसम अवलोकन ({req_year})**\n\n"
+                        f"• **चयनित वर्ष**: {req_year}\n"
+                        f"• **वार्षिक कुल वर्षा**: {rain_mm} मिमी ({rain_days} वर्षा दिवस)\n"
+                        f"• **औसत वार्षिक तापमान**: {mean_t}°C\n"
+                        f"• **उच्चतम तापमान**: {high_t}°C | न्यूनतम तापमान: {low_t}°C\n"
+                        f"• **सबसे अधिक वर्षा वाला महीना**: {wettest}\n"
+                        f"• **सबसे गर्म महीना**: {warmest}\n"
+                        f"• **संदर्भ केंद्र**: {st_name}{dist_str}"
+                    )
+                }
+                return climate_texts.get(lang, climate_texts["en"]), f"Historical {req_year}: {mean_t}°C / {rain_mm}mm", [
+                    f"What was the rainfall in {city_short} in {req_year - 1}?",
+                    f"What was the hottest month in {req_year}?",
+                    f"What is the current temperature in {city_short}?"
+                ]
+
+            # Otherwise Climatological Normal (1991–2020)
+            ref = clim.get("reference_station") or {}
+            src = clim.get("source_info") or clim.get("source") or {}
+            ann = clim.get("annual") or {}
+
+            st_name = ref.get("name") or clim.get("location_name") or location
+            dist_km = ref.get("distance_km")
+            dist_str = f" (~{dist_km} km away)" if dist_km is not None and dist_km > 0 else ""
+            period = (src.get("period") if isinstance(src, dict) else None) or clim.get("period", "1991–2020")
+            org = (src.get("organization") if isinstance(src, dict) else None) or "India Meteorological Department (IMD)"
+
+            mean_t = ann.get("mean_temperature_c") or clim.get("annual_mean_temp", "N/A")
+            max_t = ann.get("max_temperature_c", "N/A")
+            rain_mm = ann.get("total_precipitation_mm") or clim.get("annual_total_rainfall", "N/A")
+            rain_days = ann.get("rainy_days", "N/A")
+            wettest = ann.get("wettest_month") or clim.get("wettest_month", "N/A")
+            warmest = ann.get("warmest_month") or clim.get("warmest_month", "N/A")
+
+            # Check if user asked for a specific calendar year per Section 18
+            year_match = re.search(r"\b(19\d\d|20\d\d)\b", query)
+            year_disclaimer = ""
+            if year_match:
+                spec_year = year_match.group(1)
+                year_disclaimer = (
+                    f"\n\n⚠️ *Note: You asked about {spec_year}. The figures above represent official 30-year "
+                    f"Climatological Normals ({period}), not single-year observations for {spec_year}.*"
+                )
+
+            climate_texts = {
+                "en": (
+                    f"📊 **Official Climate Analysis for {location}**\n\n"
+                    f"• **Reference Station**: {st_name}{dist_str}\n"
+                    f"• **Climatological Period**: {period} Normals\n"
+                    f"• **Mean Annual Temperature**: {mean_t}°C\n"
+                    f"• **Warmest Month**: {warmest} (Max: {max_t}°C)\n"
+                    f"• **Annual Precipitation**: {rain_mm} mm\n"
+                    f"• **Wettest Month**: {wettest}\n"
+                    f"• **Typical Rainy Days (≥2.5mm)**: {rain_days} days/year\n"
+                    f"{year_disclaimer}\n"
+                    f"🏛️ *Source: {org} (Authoritative Climatological Normals)*"
+                ),
+                "te": (
+                    f"📊 **{location} అధికారిక శీతోష్ణస్థితి విశ్లేషణ (Climate Normals)**\n\n"
+                    f"• **సూచన స్టేషన్**: {st_name}{dist_str}\n"
+                    f"• **సాధారణ కాలం**: {period} క్లైమేట్ నార్మల్స్\n"
+                    f"• **సగటు వార్షిక ఉష్ణోగ్రత**: {mean_t}°C\n"
+                    f"• **అత్యంత వేడిగా ఉండే నెల**: {warmest}\n"
+                    f"• **వార్షిక వర్షపాతం**: {rain_mm} మి.మీ\n"
+                    f"• **అత్యధిక వర్షపాతం గల నెల**: {wettest}\n"
+                    f"• **వర్షపు రోజులు**: ఏడాదికి {rain_days} రోజులు\n"
+                    f"🏛️ *మూలం: {org}*"
+                ),
+                "hi": (
+                    f"📊 **{location} का आधिकारिक जलवायु विश्लेषण (Climate Normals)**\n\n"
+                    f"• **संदर्भ केंद्र**: {st_name}{dist_str}\n"
+                    f"• **जलवायु अवधि**: {period} मानक (Normals)\n"
+                    f"• **औसत वार्षिक तापमान**: {mean_t}°C\n"
+                    f"• **सबसे गर्म महीना**: {warmest}\n"
+                    f"• **वार्षिक वर्षा**: {rain_mm} मिमी\n"
+                    f"• **सबसे अधिक वर्षा वाला महीना**: {wettest}\n"
+                    f"• **औसत वर्षा दिवस**: {rain_days} दिन/वर्ष\n"
+                    f"🏛️ *स्रोत: {org}*"
+                )
+            }
+            return climate_texts.get(lang, climate_texts["en"]), f"Climate: {mean_t}°C / {rain_mm}mm ({period})", [
+                f"What is the wettest month in {city_short}?",
+                f"What is the annual precipitation in {city_short}?",
+                f"What is the current temperature in {city_short}?"
+            ]
+
+        # ---------------------------------------------------------------------
         # 10. WEATHER_CURRENT (EXPLICIT ONLY)
         # ---------------------------------------------------------------------
         if intent == "WEATHER_CURRENT":
@@ -980,14 +1069,23 @@ class AIService:
                 tools_data["risk"] = rk_res
                 tool_results_payload.append(rk_res)
 
-            # Tool: Climate statistics (Section 32)
+            # Tool: Climate statistics (Section 32 & Location+Year)
             if "get_climate_statistics" in tools_needed:
                 try:
-                    clim_res = await weather_service.get_historical_climate(target_loc, query_lat, query_lon)
-                    tools_data["climate"] = clim_res.model_dump() if hasattr(clim_res, "model_dump") else clim_res.dict()
-                    tool_results_payload.append({"tool_name": "get_climate_statistics", "result": tools_data["climate"]})
-                    if clim_res.source:
-                        sources_list.append(clim_res.source)
+                    target_year = parsed.get("target_year")
+                    if target_year:
+                        lat_r, lon_r, loc_disp = await weather_service.resolve_coordinates(target_loc, query_lat, query_lon)
+                        clim_dict = await historical_year_service.get_year_data(lat_r, lon_r, loc_disp, target_year)
+                        tools_data["climate"] = clim_dict
+                        tool_results_payload.append({"tool_name": "get_climate_statistics", "result": clim_dict})
+                        sources_list.append(clim_dict.get("source", {}).get("name", "ECMWF ERA5 / IMD Observatory Network"))
+                    else:
+                        clim_res = await weather_service.get_historical_climate(target_loc, query_lat, query_lon)
+                        tools_data["climate"] = clim_res.model_dump() if hasattr(clim_res, "model_dump") else clim_res.dict()
+                        tool_results_payload.append({"tool_name": "get_climate_statistics", "result": tools_data["climate"]})
+                        if clim_res.source:
+                            src_str = clim_res.source.organization if hasattr(clim_res.source, "organization") else str(clim_res.source)
+                            sources_list.append(src_str)
                 except Exception as ce:
                     safe_log(f"[Chat Engine] Climate stats error: {ce}")
 

@@ -20,9 +20,23 @@ from app.services.alerts.alert_monitor_worker import alert_monitor_worker
 from app.services.alerts.disaster_sms_worker import disaster_sms_worker
 import asyncio
 
-# Create database tables automatically
+# Create database tables automatically and ensure required columns exist
 try:
     Base.metadata.create_all(bind=engine)
+    # Safe SQLite column migration for phone_otps
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        try:
+            res = conn.execute(text("PRAGMA table_info(phone_otps)"))
+            existing_cols = [row[1] for row in res.fetchall()]
+            if existing_cols:
+                if "is_used" not in existing_cols:
+                    conn.execute(text("ALTER TABLE phone_otps ADD COLUMN is_used BOOLEAN DEFAULT 0"))
+                if "used_at" not in existing_cols:
+                    conn.execute(text("ALTER TABLE phone_otps ADD COLUMN used_at DATETIME"))
+                conn.commit()
+        except Exception as mig_err:
+            print(f"[Migration Note] Column check notice: {mig_err}")
 except Exception as e:
     print(f"[Database Warning] Table initialization note: {e}")
 

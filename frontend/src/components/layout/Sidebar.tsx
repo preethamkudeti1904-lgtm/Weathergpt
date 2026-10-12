@@ -1,6 +1,7 @@
 import React from 'react';
 import { useWeather } from '../../contexts/WeatherContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { canAccessAdvisory } from '../../utils/permissions';
 import {
   Home,
   CloudSun,
@@ -60,23 +61,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
   };
 
-  // Custom advisory title & icon based on role
-  const getAdvisoryNav = () => {
-    switch (userType) {
-      case 'Farmer':
-        return { label: t('nav_crop_advisory'), icon: Sprout };
-      case 'Disaster Management':
-        return { label: t('nav_disaster_ops'), icon: ShieldAlert };
-      case 'Aviation':
-        return { label: t('nav_aviation_met'), icon: Plane };
-      case 'Marine':
-        return { label: t('nav_marine_weather'), icon: Waves };
-      default:
-        return { label: t('nav_advisory'), icon: Sprout };
-    }
-  };
-
-  const advisoryNav = getAdvisoryNav();
+  const isFarmer = canAccessAdvisory(user);
 
   const navItems = [
     { id: 'dashboard', label: t('nav_dashboard'), icon: Home },
@@ -87,7 +72,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'climate', label: t('nav_climate'), icon: BarChart3 },
     { id: 'locations', label: t('nav_locations'), icon: MapPin },
     { id: 'chat', label: t('nav_ai'), icon: Bot, isHighlight: true },
-    { id: 'advisory', label: advisoryNav.label, icon: advisoryNav.icon },
+    ...(isFarmer ? [{ id: 'advisory', label: t('nav_advisory'), icon: Sprout }] : []),
     { id: 'wind-direction', label: t('nav_wind_direction'), icon: Compass },
     { id: 'settings', label: t('nav_settings'), icon: Settings },
   ];

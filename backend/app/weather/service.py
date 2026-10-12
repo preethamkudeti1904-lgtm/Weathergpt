@@ -13,10 +13,12 @@ from app.services.alerts.sachet_provider import sachet_provider
 from app.services.alerts.global_provider import global_alert_provider
 from app.services.alerts.geospatial import evaluate_alert_spatial_match
 from app.services.risk.hazard_engine import hazard_risk_engine
+from app.services.climate.imd_normals import imd_climate_service
 
 
 # Well-known Indian and international locations with accurate lat/lon for instant lookups
 PRESET_LOCATIONS: Dict[str, Tuple[float, float, str, str]] = {
+    "nagavarappadu": (16.5400, 80.8100, "Nagavarappadu", "Andhra Pradesh"),
     "guntur": (16.3067, 80.4365, "Guntur", "Andhra Pradesh"),
     "vijayawada": (16.5062, 80.6480, "Vijayawada", "Andhra Pradesh"),
     "visakhapatnam": (17.6868, 83.2185, "Visakhapatnam", "Andhra Pradesh"),
@@ -368,31 +370,126 @@ class WeatherService:
 
     async def get_historical_climate(self, location: str, lat: Optional[float] = None, lon: Optional[float] = None) -> ClimateResponse:
         """
-        Retrieves location-specific historical climate analysis using exact latitude and longitude coordinates.
-        Uses composite cache key containing coordinates, period, and source per Section 17.
+        Retrieves authoritative location-specific climatological normal analysis using exact coordinates.
+        Prioritizes official India Meteorological Department (IMD) 1991–2020 Normals.
+        Finds the nearest valid IMD observatory station via Haversine distance.
+        Explicitly exposes reference station ID, station name, distance_km, period (1991–2020),
+        and data_type ('climatological_normal').
+        Falls back to authoritative WMO/ERA5 reanalysis for locations outside India.
+        Uses composite cache key containing station_id, coordinates, dataset, period, and source per Section 15.
         """
         lat_r, lon_r, loc_display = await self.resolve_coordinates(location, lat, lon)
-        cache_key = f"climate_{round(lat_r, 4)}_{round(lon_r, 4)}_2021_2023_era5"
         now = time.time()
 
+        # 1. Find nearest official IMD observatory station
+        nearest_station, dist_km = imd_climate_service.find_nearest_station(lat_r, lon_r)
+
+        # Consider in India or nearby if within 450 km of an IMD observatory station or within Indian coordinates
+        is_india_region = (6.0 <= lat_r <= 37.5 and 68.0 <= lon_r <= 97.5) or (nearest_station and dist_km <= 450.0)
+
+        if nearest_station and is_india_region:
+            st_id = nearest_station["id"]
+            cache_key = f"climate:{st_id}:{round(lat_r, 4)}_{round(lon_r, 4)}:1991-2020:IMD"
+            if cache_key in self._cache:
+                ts, val = self._cache[cache_key]
+                if now - ts < 86400:
+                    return val
+
+            # Format authoritative IMD dataset
+            res_dict = imd_climate_service.format_climate_dataset(
+                station=nearest_station,
+                distance_km=dist_km,
+                requested_location=loc_display,
+                req_lat=lat_r,
+                req_lon=lon_r
+            )
+
+            # Backend validation per Section 19
+            self._validate_climate_data(res_dict)
+
+            res = ClimateResponse(**res_dict)
+            self._cache[cache_key] = (now, res)
+            return res
+
+        # 2. International / Non-India Fallback: ECMWF ERA5 Reanalysis
+        cache_key = f"climate:era5:{round(lat_r, 4)}_{round(lon_r, 4)}:2021-2023:ECMWF"
         if cache_key in self._cache:
             ts, val = self._cache[cache_key]
             if now - ts < 86400:
                 return val
 
-        geo_info = await self.reverse_geocode(lat_r, lon_r)
-        country = geo_info.get("country", "India")
-        state = geo_info.get("state")
-        city = geo_info.get("name")
-
         provider = self._get_provider()
         res = await provider.get_historical_climate(lat_r, lon_r, loc_display)
-        res.city = city
-        res.state = state
-        res.country = country
+
+        # Validate provider result
+        res_dict = res.model_dump() if hasattr(res, "model_dump") else res.dict()
+        self._validate_climate_data(res_dict)
 
         self._cache[cache_key] = (now, res)
         return res
+
+    def _validate_climate_data(self, data: Dict[str, Any]) -> None:
+        """
+        Backend validation per Section 19:
+        Reject climate datasets if:
+        - period metadata is missing
+        - source metadata is missing
+        - monthly data has invalid months
+        - impossible numeric values occur
+        - duplicate months occur
+        - data is empty
+        """
+        src = data.get("source") or data.get("source_info")
+        period = (src.get("period") if isinstance(src, dict) else None) or data.get("period")
+        if not period or not str(period).strip():
+            raise ValueError("Climate dataset rejected: period metadata is missing")
+
+        if not src:
+            raise ValueError("Climate dataset rejected: source metadata is missing")
+
+        monthly = data.get("monthly")
+        if not monthly or len(monthly) != 12:
+            raise ValueError(f"Climate dataset rejected: expected 12 months, got {len(monthly) if monthly else 0}")
+
+        valid_months = {
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December"
+        }
+        seen = set()
+        for pt in monthly:
+            if isinstance(pt, dict):
+                m = pt.get("month")
+                avg_t = pt.get("avg_temperature_c")
+                max_t = pt.get("max_temperature_c")
+                min_t = pt.get("min_temperature_c")
+                rain = pt.get("precipitation_mm")
+                days = pt.get("rain_days")
+            else:
+                m = getattr(pt, "month", None)
+                avg_t = getattr(pt, "avg_temperature_c", None)
+                max_t = getattr(pt, "max_temperature_c", None)
+                min_t = getattr(pt, "min_temperature_c", None)
+                rain = getattr(pt, "precipitation_mm", None)
+                days = getattr(pt, "rain_days", None)
+
+            if m not in valid_months:
+                raise ValueError(f"Climate dataset rejected: invalid month name '{m}'")
+            if m in seen:
+                raise ValueError(f"Climate dataset rejected: duplicate month '{m}'")
+            seen.add(m)
+
+            if avg_t is None or not (-60.0 <= avg_t <= 60.0):
+                raise ValueError(f"Climate dataset rejected: invalid avg temperature {avg_t}°C in {m}")
+            if max_t is None or not (-60.0 <= max_t <= 60.0):
+                raise ValueError(f"Climate dataset rejected: invalid max temperature {max_t}°C in {m}")
+            if min_t is None or not (-60.0 <= min_t <= 60.0):
+                raise ValueError(f"Climate dataset rejected: invalid min temperature {min_t}°C in {m}")
+            if max_t < min_t:
+                raise ValueError(f"Climate dataset rejected: max temp {max_t}°C < min temp {min_t}°C in {m}")
+            if rain is None or rain < 0.0 or rain > 5000.0:
+                raise ValueError(f"Climate dataset rejected: invalid rainfall {rain} mm in {m}")
+            if days is None or days < 0.0 or days > 31.0:
+                raise ValueError(f"Climate dataset rejected: invalid rain days {days} in {m}")
 
     async def reverse_geocode(self, lat: float, lon: float) -> Dict[str, Any]:
         """

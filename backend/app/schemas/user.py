@@ -75,4 +75,8 @@ class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserOut
+    dev_otp: Optional[str] = None
+    is_development: Optional[bool] = False
+    sms_provider: Optional[str] = None
+    message: Optional[str] = None
 

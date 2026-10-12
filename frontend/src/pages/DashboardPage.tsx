@@ -1,6 +1,7 @@
 import React from 'react';
 import { useWeather } from '../contexts/WeatherContext';
 import { useAuth } from '../contexts/AuthContext';
+import { canAccessAdvisory } from '../utils/permissions';
 import { WeatherCard } from '../components/weather/WeatherCard';
 import { HourlyForecast } from '../components/weather/HourlyForecast';
 import { DailyForecast } from '../components/weather/DailyForecast';
@@ -84,14 +85,16 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
           </button>
         </div>
 
-        {/* Role Shortcut */}
-        <button
-          onClick={() => onNavigate('advisory')}
-          className="text-xs font-semibold text-primary-600 dark:text-primary-400 hover:underline flex items-center gap-1"
-        >
-          <span>{t('advisory')}</span>
-          <ArrowRight className="w-3.5 h-3.5" />
-        </button>
+        {/* Role Shortcut (Farmer Only) */}
+        {canAccessAdvisory(user) && (
+          <button
+            onClick={() => onNavigate('advisory')}
+            className="text-xs font-semibold text-primary-600 dark:text-primary-400 hover:underline flex items-center gap-1"
+          >
+            <span>{t('advisory')}</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        )}
       </div>
 
       {/* Dedicated Central Location & Live GPS Card */}

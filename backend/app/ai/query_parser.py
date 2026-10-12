@@ -238,24 +238,34 @@ def parse_weather_query(
         }
 
     # -------------------------------------------------------------------------
-    # G2. CLIMATE_ANALYSIS & HISTORICAL_WEATHER (Section 32)
+    # G2. CLIMATE_ANALYSIS & HISTORICAL_WEATHER (Section 32 & Location+Year)
     # -------------------------------------------------------------------------
-    if any(w in q_lower for w in [
+    year_match = re.search(r"\b(19\d\d|20[0-2]\d)\b", query)
+    is_year_weather_query = year_match is not None and any(w in q_lower for w in [
+        "rainfall", "rain", "temperature", "temp", "weather", "climate", "hot", "cold", "precipitation",
+        "వర్షం", "ఉష్ణోగ్రత", "వాతావరణం", "बारिश", "तापमान", "मौसम", "जलवायु"
+    ])
+
+    if is_year_weather_query or any(w in q_lower for w in [
+        "average rainfall", "average rainfall in this location", "average rainfall here", "mean rainfall",
         "wettest month", "warmest month", "hottest month", "coldest month", "driest month",
         "usually hottest", "usually warmest", "usually wettest", "usually coldest", "usually rains",
         "month is usually", "is usually hottest", "is usually warmest", "is usually wettest",
         "annual rainfall", "annual precipitation", "how much rain does this place", "how much rain does it receive",
         "how much rain does it usually", "how much rain does", "mean annual temp", "mean annual temperature",
         "average annual temperature", "climate of", "climate analysis", "climate trends", "historical climate",
-        "normal temperature", "annual temperature",
-        "అత్యధిక వర్షపాతం", "అత్యంత వేడిగా ఉండే నెల", "వార్షిక వర్షపాతం", "వాతావరణ తీరు",
-        "सबसे अधिक बारिश", "सबसे गर्म महीना", "वार्षिक वर्षा", "जलवायु"
+        "climate normal", "climate normals", "climatological normal", "climatological normals", "imd climate",
+        "what was the climate like", "what is the climate like", "climate data",
+        "normal temperature", "annual temperature", "normal rainfall", "normal precipitation",
+        "అత్యధిక వర్షపాతం", "అత్యంత వేడిగా ఉండే నెల", "వార్షిక వర్షపాతం", "వాతావరణ తీరు", "సగటు వర్షపాతం",
+        "सबसे अधिक बारिश", "सबसे गर्म महीना", "वार्षिक वर्षा", "जलवायु", "औसत वर्षा"
     ]):
         return {
             "intent": "HISTORICAL_WEATHER",
             "requires_weather_data": True,
             "target_location": final_location,
             "time_frame": time_frame,
+            "target_year": int(year_match.group(1)) if year_match else None,
             "is_explicit_location": detected_loc is not None,
             "tools_needed": ["get_climate_statistics"],
             "raw_query": query

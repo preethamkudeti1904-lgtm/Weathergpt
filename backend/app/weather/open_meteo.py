@@ -13,7 +13,15 @@ from app.schemas.weather import (
     NormalizedLocation,
     NormalizedCurrent
 )
-from app.schemas.climate import ClimateResponse, ClimateTrendPoint
+from app.schemas.climate import (
+    ClimateResponse,
+    ClimateTrendPoint,
+    ClimateMonthlyPoint,
+    ClimateAnnualSummary,
+    ClimateSourceInfo,
+    LocationMetadata,
+    ReferenceStationInfo
+)
 
 class OpenMeteoProvider(WeatherProvider):
     @property
@@ -507,7 +515,56 @@ class OpenMeteoProvider(WeatherProvider):
         wettest_m = max(points, key=lambda p: p.total_rainfall).label
         warmest_m = max(points, key=lambda p: p.avg_temperature).label
 
+        monthly_points = [
+            ClimateMonthlyPoint(
+                month=p.label,
+                avg_temperature_c=p.avg_temperature,
+                max_temperature_c=p.max_temperature,
+                min_temperature_c=p.min_temperature,
+                precipitation_mm=p.total_rainfall,
+                rain_days=float(p.rainfall_days)
+            ) for p in points
+        ]
+        annual_summary = ClimateAnnualSummary(
+            mean_temperature_c=mean_annual_temp,
+            max_temperature_c=round(sum(p.max_temperature for p in points) / 12, 1),
+            min_temperature_c=round(sum(p.min_temperature for p in points) / 12, 1),
+            total_precipitation_mm=total_annual_rain,
+            rainy_days=float(sum(p.rainfall_days for p in points)),
+            wettest_month=wettest_m,
+            warmest_month=warmest_m
+        )
+        source_obj = ClimateSourceInfo(
+            organization="ECMWF / Open-Meteo",
+            division="Copernicus Climate Change Service",
+            dataset="ERA5 Atmospheric Reanalysis",
+            period=f"{min(years)}–{max(years)}",
+            data_type="historical_reanalysis",
+            attribution="European Centre for Medium-Range Weather Forecasts (ECMWF) ERA5 Reanalysis",
+            rain_day_definition="Daily precipitation >= 1.0 mm",
+            url="https://open-meteo.com/en/docs/historical-weather-api"
+        )
+        loc_meta = LocationMetadata(
+            name=location_name,
+            latitude=lat,
+            longitude=lon
+        )
+        ref_meta = ReferenceStationInfo(
+            id=f"ERA5-{round(lat, 2)}-{round(lon, 2)}",
+            name=f"{location_name} ERA5 Grid Cell",
+            latitude=lat,
+            longitude=lon,
+            distance_km=0.0
+        )
+
         return ClimateResponse(
+            location=loc_meta,
+            requested_location=loc_meta,
+            reference_station=ref_meta,
+            source_info=source_obj,
+            source=source_obj,
+            annual=annual_summary,
+            monthly=monthly_points,
             location_name=location_name,
             latitude=lat,
             longitude=lon,
@@ -520,7 +577,6 @@ class OpenMeteoProvider(WeatherProvider):
             wettest_month=wettest_m,
             warmest_month=warmest_m,
             rain_day_threshold_mm=1.0,
-            source="ECMWF ERA5 Atmospheric Reanalysis / Open-Meteo Archive",
             updated_at=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         )
 

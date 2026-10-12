@@ -264,6 +264,54 @@ export interface LocationItem {
   display_name: string;
 }
 
+export interface ReferenceStationInfo {
+  id: string;
+  name: string;
+  city?: string;
+  district?: string;
+  state?: string;
+  latitude: number;
+  longitude: number;
+  elevation_m?: number;
+  distance_km: number;
+}
+
+export interface ClimateSourceInfo {
+  organization: string;
+  division?: string;
+  dataset: string;
+  period: string;
+  data_type: string;
+  attribution: string;
+  rain_day_definition: string;
+  url?: string;
+}
+
+export interface ClimateAnnualSummary {
+  mean_temperature_c: number;
+  max_temperature_c: number;
+  min_temperature_c: number;
+  total_precipitation_mm: number;
+  rainy_days: number;
+  wettest_month: string;
+  warmest_month: string;
+}
+
+export interface ClimateMonthlyPoint {
+  month: string;
+  avg_temperature_c: number;
+  max_temperature_c: number;
+  min_temperature_c: number;
+  precipitation_mm: number;
+  rain_days: number;
+}
+
+export interface LocationMetadata {
+  name: string;
+  latitude: number;
+  longitude: number;
+}
+
 export interface ClimateTrendPoint {
   label: string;
   avg_temperature: number;
@@ -274,6 +322,12 @@ export interface ClimateTrendPoint {
 }
 
 export interface ClimateData {
+  location?: LocationMetadata;
+  requested_location?: LocationMetadata;
+  reference_station?: ReferenceStationInfo;
+  source_info?: ClimateSourceInfo;
+  annual?: ClimateAnnualSummary;
+  monthly?: ClimateMonthlyPoint[];
   location_name: string;
   latitude: number;
   longitude: number;
@@ -289,6 +343,50 @@ export interface ClimateData {
   city?: string;
   state?: string;
   country?: string;
-  source: string;
+  source: string | ClimateSourceInfo;
   updated_at: string;
 }
+
+export interface HistoricalYearMonthly {
+  month: string;
+  avg_temperature: number;
+  max_temperature: number;
+  min_temperature: number;
+  rainfall: number;
+  rainy_days: number;
+}
+
+export interface HistoricalYearSummary {
+  annual_average_temperature: number;
+  annual_rainfall: number;
+  highest_temperature: number;
+  lowest_temperature: number;
+  warmest_month: string;
+  coldest_month: string;
+  wettest_month: string;
+  driest_month: string;
+  total_rainy_days: number;
+}
+
+export interface HistoricalSource {
+  name: string;
+  station: string;
+  station_id?: string;
+  distance_km: number;
+  dataset?: string;
+  data_coverage?: string;
+  observation_type?: string;
+  rain_day_definition?: string;
+  attribution?: string;
+}
+
+export interface HistoricalYearResponse {
+  location: LocationMetadata;
+  year: number;
+  source: HistoricalSource;
+  monthly: HistoricalYearMonthly[];
+  summary: HistoricalYearSummary;
+  available_years?: number[];
+  climatological_normal?: ClimateData | any;
+}
+

@@ -12,6 +12,8 @@ class PhoneOtp(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     expires_at = Column(DateTime, nullable=False)
     attempts = Column(Integer, default=0)
+    is_used = Column(Boolean, default=False, nullable=False)
+    used_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     user = relationship("User")

@@ -3,6 +3,7 @@ import {
   ForecastData,
   AlertsData,
   ClimateData,
+  HistoricalYearResponse,
   LocationItem,
   User,
   UserType,
@@ -244,6 +245,26 @@ export const api = {
     }
     const res = await fetch(`${API_BASE}/climate/history?${params.toString()}`);
     if (!res.ok) throw new Error('Unable to retrieve climate history.');
+    return res.json();
+  },
+
+  getHistoricalClimateYear: async (location: string, year: number, lat?: number, lon?: number): Promise<HistoricalYearResponse> => {
+    const params = new URLSearchParams({ location, year: year.toString() });
+    if (lat !== undefined && lon !== undefined) {
+      params.append('latitude', lat.toString());
+      params.append('longitude', lon.toString());
+    }
+    const res = await fetch(`${API_BASE}/climate/historical?${params.toString()}`);
+    if (!res.ok) {
+      let detailMsg = '';
+      try {
+        const errJson = await res.json();
+        detailMsg = errJson.detail || '';
+      } catch {
+        // use fallback message below
+      }
+      throw new Error(detailMsg || `Historical data could not be retrieved for this location and year ${year} (Status ${res.status}).`);
+    }
     return res.json();
   },
 
